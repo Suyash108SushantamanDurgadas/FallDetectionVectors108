@@ -1,0 +1,152 @@
+#include <Wire.h>
+#include <MPU6050.h>
+#include <math.h>
+
+MPU6050 mpu;
+
+const int buzzerPin = 2; // Buzzer is connected for output
+const float criticalAngle = 8.1;   // Critical Angle (degrees)
+const float b = 1.50;    // Net Acceleration Threshold (g)
+const float c = 2.00;    // Rate of change threshold (deg/s)
+float acta = 150.00; // Placeholder value for angle calculation
+float acta1;
+unsigned long previoustime;
+float proba = 0.92;
+int fallsigns[1000];
+int i = 0, count = 0;
+float a1 = 0.00; // Angle in current iteration
+float b1 = 0.0;  // Net Acceleration in current iteration
+float c1 = 0.0;  // Rate of Change in current iteration
+const float sa = 0.4;
+const float sn = 0.5;
+const float ss = 0.1;
+
+// Weights for fall probability calculation
+float wa = 0.2;  // Angle Weight
+float wn = 0.4;  // Net Accel Weight
+float ws = 0.4;  // Rate of Change weight
+float fallProbability = 0.0;
+float a2 = criticalAngle;
+
+// Person's height (in cm)
+const float personHeight = 170.0;  // Example height: 170 cm
+const float heightFactor = 0.002;  // A scaling factor based on height
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  mpu.initialize();
+
+  pinMode(buzzerPin, OUTPUT);  // Initialize the buzzer pin as an output
+
+  // Check MPU6050 connection
+  if (!mpu.testConnection()) {
+    Serial.println("MPU6050 connection failed");
+    while (1);
+  }
+  Serial.println("MPU6050 connection successful");
+}
+
+void loop() {
+  // Get angle data from MPU6050
+  int16_t ax, ay, az;
+  mpu.getAcceleration(&ax, &ay, &az);
+
+  // Convert raw accelerometer data to 'g' (assuming 16-bit data with range ±2g)
+  float ax_g = ax / 16384.0;
+  float ay_g = ay / 16384.0;
+  float az_g = az / 16384.0;
+
+  // Calculate pitch (angle in degrees)
+  acta1 = atan2(ax_g, sqrt(ay_g * ay_g + az_g * az_g)) * 180.0 / PI;
+  a1 = acta1 - 90.00;
+  if (a1 < 0) {
+    a1 = abs(a1);
+    Serial.println("The person is bending in backward direction");
+  }else{
+    Serial.println("The person is bending in forward direction");
+  }
+
+  // Calculate net acceleration (in g's)
+  b1 = sqrt(ax_g * ax_g + ay_g * ay_g + az_g * az_g);
+
+  // Calculate the time difference
+  unsigned long currentTime = millis();
+  float deltaTime = (currentTime - previoustime) / 1000.0; // Time difference in seconds
+
+  // Calculate the rate of change of angle
+  c1 = (a1 - a2) / deltaTime;
+
+  // Calculate fall probability using height, critical angle, and angular velocity
+  fallProbability = calculateFallProbability(a1, b1, c1);
+
+  // Print the angle, net acceleration, rate of change, and fall probability
+  Serial.println("Angle: " + String(a1) + " degrees");
+  Serial.println("Net Acceleration: " + String(b1) + " g");
+  Serial.println("Rate of Change: " + String(c1) + " deg/s");
+  Serial.println("Fall Probability: " + String(fallProbability));
+
+  // Trigger an alert if fall signs are detected
+  if (fallProbability > 0.6 || b1 > b) {
+    Serial.println("Fall signs are detected!");
+    fallsigns[count] = 1;
+  } else {
+    fallsigns[count] = 0;
+  }
+
+  // Check if there are three consecutive fall signs
+  if (count >= 2 && fallsigns[count - 2] == 1 && fallsigns[count - 1] == 1 && fallsigns[count] == 1) {
+    Serial.println("Fall is expected, triggering the alert...");
+    triggerBuzzer();
+  } else {
+    digitalWrite(buzzerPin, LOW); // Turn off the buzzer
+  }
+
+  // Update variables for the next iteration
+  previoustime = currentTime;
+  a2 = a1;
+  count = (count + 1) % 1000; // Wrap count to avoid overflow
+  delay(2000); // Adjust delay for sensor readings
+}
+
+// Function to calculate fall probability based on angle, net acceleration, and rate of change
+float calculateFallProbability(float a1, float b1, float c1) {
+  // Height adjustment factor
+  float heightAdjustment = 1 + (heightFactor * personHeight); // Scaling fall probability by height
+
+  // Calculate the difference between the current angle and the critical angle
+  float angleDifference = abs(a1 - criticalAngle);
+
+  // Adjust fall probability based on the difference from the critical angle
+  // The angle adjustment factor decreases as the angle approaches the critical angle
+  float angleAdjustment = angleDifference / 90.0;  // Normalize to 0 to 1 range
+
+  // Calculate preterm based on angle, net acceleration, and rate of change
+  float preterm = (sa * wa * (a1 - criticalAngle) + sn * wn * (b1 - b) + ss * ws * (c1 - c)) * heightAdjustment * (1 - angleAdjustment);
+
+  // Logistic function to ensure 0.97 probability at the critical angle
+  float targetExpTerm = -3.485;  // Preterm required for 0.97 probability
+  if (angleDifference == 0) {
+    preterm = targetExpTerm;  // Ensure at critical angle, preterm matches the value for 0.97 probability
+  }
+
+  // Calculate fall probability using logistic function
+  float expterm = exp(-preterm);
+  fallProbability = 1.992 * proba / (1.0 + expterm);
+
+  // Ensure the probability doesn't exceed 1.00
+  if (fallProbability >= 1.00) {
+    fallProbability = 1.00;
+  }
+
+  return fallProbability;
+}
+
+
+// Function to trigger the buzzer
+void triggerBuzzer() {
+  digitalWrite(buzzerPin, HIGH); // Turn on the buzzer
+  delay(5000);                   // Keep the buzzer on for 5 seconds
+  digitalWrite(buzzerPin, LOW);  // Turn off the buzzer
+  delay(500);
+}
